@@ -139,7 +139,7 @@ createPath(TEMP_FOLDER)
 
 if(args.prefps != None):
     print("Pre-converting file to", args.prefps, "FPS...")
-    subprocess.call("ffmpeg -hide_banner -loglevel error -y -i \""+INPUT_FILE+"\" -filter:v fps="+str(int(args.prefps))+" -c:v h264_nvenc -b:v 5M -c:a copy \""+TEMP_FOLDER+"/temp.mp4\"", shell=True)
+    subprocess.call("ffmpeg -hide_banner -loglevel error -y -i \""+INPUT_FILE+"\" -filter:v fps="+str(int(args.prefps))+" -c:v libx264 -preset veryfast -c:a copy \""+TEMP_FOLDER+"/temp.mp4\"", shell=True)
     INPUT_FILE=TEMP_FOLDER+"temp.mp4"
     frameRate=args.prefps
 
@@ -274,7 +274,7 @@ wavfile.write(TEMP_FOLDER+"/audioNew.wav",SAMPLE_RATE,outputAudioData)
 
 print("Joining frames and audio to mp4 file...")
 
-command = "ffmpeg -hide_banner -loglevel error -y -vsync 0 -hwaccel cuda -hwaccel_output_format cuda -c:v mjpeg_cuvid -framerate "+str(frameRate)+" -i "+TEMP_FOLDER+"/newFrame%06d.jpg -i "+TEMP_FOLDER+"/audioNew.wav -c:a aac -c:v h264_nvenc "+OUTPUT_FILE
+command = "ffmpeg -hide_banner -loglevel error -y -vsync 0 -hwaccel cuda -hwaccel_output_format cuda -c:v mjpeg_cuvid -framerate "+str(frameRate)+" -i "+TEMP_FOLDER+"/newFrame%06d.jpg -i "+TEMP_FOLDER+"/audioNew.wav -c:a aac -c:v libx264 "+OUTPUT_FILE
 subprocess.call(command, shell=True)
 
 if not os.path.ismount(TEMP_FOLDER):
