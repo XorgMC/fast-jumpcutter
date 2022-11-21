@@ -18,6 +18,16 @@ lastExistingFrame = None
 
 copiedFiles = {}
 
+def setOutputPointer(data):
+    global outputPointer
+    print("setOutputPointer->", data)
+    outputPointer = data
+
+def setLastExistingFrame(data):
+    global lastExistingFrame
+    print("setLastExistingFrame->", data)
+    lastExistingFrame = data
+
 def convert_to_float(frac_str):
     try:
         return float(frac_str)
@@ -34,6 +44,8 @@ def convert_to_float(frac_str):
 def split(a, n):
     k, m = divmod(len(a), n)
     return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
+
+
 
 def downloadFile(url):
     name = YouTube(url).streams.first().download()
@@ -69,6 +81,9 @@ def copyFrameClean(inputFrame,outputFrame):
             return False
         copiedFiles[src] = dst
         move(src, dst)
+    #copyfile(src, dst)
+    #if outputFrame%20 == 19:
+        #print(str(outputFrame+1)+" time-altered frames saved.")
     return True
 
 def inputToOutputFilename(filename):
@@ -76,6 +91,8 @@ def inputToOutputFilename(filename):
     return filename[:dotIndex]+"_ALTERED"+filename[dotIndex:]
 
 def createPath(s):
+    #assert (not os.path.exists(s)), "The filepath "+s+" already exists. Don't want to overwrite it. Aborting."
+
     try:  
         if not os.path.exists(s):
            os.mkdir(s)
@@ -150,10 +167,10 @@ if(frameRate == -1):
 if(SAMPLE_RATE == -1):
     SAMPLE_RATE = int(subprocess.check_output(['ffprobe -v error -select_streams a -of default=noprint_wrappers=1:nokey=1 -show_entries stream=sample_rate "'+INPUT_FILE+'"'], shell=True).decode('utf-8'))
     print("Determined sample rate: ", SAMPLE_RATE, "Hz")
-
-# Extract audio async...    
+    
+#p = subprocess.Popen(["ffmpeg", "-i", INPUT_FILE, "-ab", "160k", "-ac", "2", "-ar", str(SAMPLE_RATE) , "-vn", TEMP_FOLDER+"/audio.wav"], shell=True)
 p = subprocess.Popen(["ffmpeg -y -i "+INPUT_FILE+" -ab 160k -ac 2 -ar "+str(SAMPLE_RATE)+" -vn -hide_banner -loglevel error "+TEMP_FOLDER+"/audio.wav"], shell=True)
-# Execute multithreaded frame extraction...
+#command = "ffmpeg -i "+INPUT_FILE+" -qscale:v "+str(FRAME_QUALITY)+" "+TEMP_FOLDER+"/frame%06d.jpg -hide_banner"
 command = "./conv-parallel.sh -i "+INPUT_FILE+" -o "+TEMP_FOLDER+" -of frame%06d.jpg -qscale:v "+str(FRAME_QUALITY)
 subprocess.call(command, shell=True)
 
@@ -199,6 +216,7 @@ outputBuf = [np.zeros((0,audioData.shape[1]))] * audioThreadNum
 lock = threading.Lock()
 
 def renderChunk(pChunk, threadNum):
+    #print("[AudioRenderChunk] Thread #" + str(threadNum) + " started!")
     global outputBuf
     outputPointer = 0
     lastExistingFrame = None
@@ -229,6 +247,7 @@ def renderChunk(pChunk, threadNum):
 
         startOutputFrame = int(math.ceil(outputPointer/samplesPerFrame))
         endOutputFrame = int(math.ceil(endPointer/samplesPerFrame))
+        #print("Converting from " + str(startOutputFrame) + " to " + str(endOutputFrame))
         for outputFrame in range(startOutputFrame, endOutputFrame):
             inputFrame = int(chunk[0]+NEW_SPEED[int(chunk[2])]*(outputFrame-startOutputFrame))
             didItWork = copyFrame(inputFrame,outputFrame)

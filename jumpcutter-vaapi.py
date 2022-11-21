@@ -18,6 +18,16 @@ lastExistingFrame = None
 
 copiedFiles = {}
 
+def setOutputPointer(data):
+    global outputPointer
+    print("setOutputPointer->", data)
+    outputPointer = data
+
+def setLastExistingFrame(data):
+    global lastExistingFrame
+    print("setLastExistingFrame->", data)
+    lastExistingFrame = data
+
 def convert_to_float(frac_str):
     try:
         return float(frac_str)
@@ -34,6 +44,8 @@ def convert_to_float(frac_str):
 def split(a, n):
     k, m = divmod(len(a), n)
     return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
+
+
 
 def downloadFile(url):
     name = YouTube(url).streams.first().download()
@@ -69,6 +81,9 @@ def copyFrameClean(inputFrame,outputFrame):
             return False
         copiedFiles[src] = dst
         move(src, dst)
+    #copyfile(src, dst)
+    #if outputFrame%20 == 19:
+        #print(str(outputFrame+1)+" time-altered frames saved.")
     return True
 
 def inputToOutputFilename(filename):
@@ -76,6 +91,8 @@ def inputToOutputFilename(filename):
     return filename[:dotIndex]+"_ALTERED"+filename[dotIndex:]
 
 def createPath(s):
+    #assert (not os.path.exists(s)), "The filepath "+s+" already exists. Don't want to overwrite it. Aborting."
+
     try:  
         if not os.path.exists(s):
            os.mkdir(s)
@@ -104,6 +121,7 @@ parser.add_argument('-fq', '--frame-quality', dest='frame_quality', type=int, de
 parser.add_argument('-sc', '--safe-copy', action='store_true', dest='scopy', help="Use old, safe copy method. Uses much more disk space.")
 parser.add_argument('-d', '--display-output', action='store_true', dest='displ', help="Open output file after jumpcutting")
 parser.add_argument('-pr', '--pre-fps', dest='prefps', help="Change FPS before jumpcutting")
+parser.add_argument('-va', '--vaapi-device', dest='vadev', default="/dev/dri/renderD128", help="VAAPI Device to use (default: /dev/dri/renderD128)")
 
 args = parser.parse_args()
 
@@ -139,7 +157,7 @@ createPath(TEMP_FOLDER)
 
 if(args.prefps != None):
     print("Pre-converting file to", args.prefps, "FPS...")
-    subprocess.call("ffmpeg -hide_banner -loglevel error -y -i \""+INPUT_FILE+"\" -filter:v fps="+str(int(args.prefps))+" -c:v h264_nvenc -b:v 5M -c:a copy \""+TEMP_FOLDER+"/temp.mp4\"", shell=True)
+    subprocess.call("ffmpeg -vaapi_device "+args.vadev+" -hide_banner -loglevel error -y -i \""+INPUT_FILE+"\" -filter:v fps="+str(int(args.prefps))+" -vf 'format=nv12,hwupload' -c:v h264_vaapi -b:v 5M -c:a copy \""+TEMP_FOLDER+"/temp.mp4\"", shell=True)
     INPUT_FILE=TEMP_FOLDER+"temp.mp4"
     frameRate=args.prefps
 
@@ -150,10 +168,10 @@ if(frameRate == -1):
 if(SAMPLE_RATE == -1):
     SAMPLE_RATE = int(subprocess.check_output(['ffprobe -v error -select_streams a -of default=noprint_wrappers=1:nokey=1 -show_entries stream=sample_rate "'+INPUT_FILE+'"'], shell=True).decode('utf-8'))
     print("Determined sample rate: ", SAMPLE_RATE, "Hz")
-
-# Extract audio async...    
+    
+#p = subprocess.Popen(["ffmpeg", "-i", INPUT_FILE, "-ab", "160k", "-ac", "2", "-ar", str(SAMPLE_RATE) , "-vn", TEMP_FOLDER+"/audio.wav"], shell=True)
 p = subprocess.Popen(["ffmpeg -y -i "+INPUT_FILE+" -ab 160k -ac 2 -ar "+str(SAMPLE_RATE)+" -vn -hide_banner -loglevel error "+TEMP_FOLDER+"/audio.wav"], shell=True)
-# Execute multithreaded frame extraction...
+#command = "ffmpeg -i "+INPUT_FILE+" -qscale:v "+str(FRAME_QUALITY)+" "+TEMP_FOLDER+"/frame%06d.jpg -hide_banner"
 command = "./conv-parallel.sh -i "+INPUT_FILE+" -o "+TEMP_FOLDER+" -of frame%06d.jpg -qscale:v "+str(FRAME_QUALITY)
 subprocess.call(command, shell=True)
 
@@ -199,6 +217,7 @@ outputBuf = [np.zeros((0,audioData.shape[1]))] * audioThreadNum
 lock = threading.Lock()
 
 def renderChunk(pChunk, threadNum):
+    #print("[AudioRenderChunk] Thread #" + str(threadNum) + " started!")
     global outputBuf
     outputPointer = 0
     lastExistingFrame = None
@@ -229,6 +248,7 @@ def renderChunk(pChunk, threadNum):
 
         startOutputFrame = int(math.ceil(outputPointer/samplesPerFrame))
         endOutputFrame = int(math.ceil(endPointer/samplesPerFrame))
+        #print("Converting from " + str(startOutputFrame) + " to " + str(endOutputFrame))
         for outputFrame in range(startOutputFrame, endOutputFrame):
             inputFrame = int(chunk[0]+NEW_SPEED[int(chunk[2])]*(outputFrame-startOutputFrame))
             didItWork = copyFrame(inputFrame,outputFrame)
@@ -274,7 +294,7 @@ wavfile.write(TEMP_FOLDER+"/audioNew.wav",SAMPLE_RATE,outputAudioData)
 
 print("Joining frames and audio to mp4 file...")
 
-command = "ffmpeg -hide_banner -loglevel error -y -vsync 0 -hwaccel cuda -hwaccel_output_format cuda -c:v mjpeg_cuvid -framerate "+str(frameRate)+" -i "+TEMP_FOLDER+"/newFrame%06d.jpg -i "+TEMP_FOLDER+"/audioNew.wav -c:a aac -c:v h264_nvenc "+OUTPUT_FILE
+command = "ffmpeg -hide_banner -loglevel error -y -vaapi_device "+args.vadev+" -framerate "+str(frameRate)+" -i "+TEMP_FOLDER+"/newFrame%06d.jpg -i "+TEMP_FOLDER+"/audioNew.wav -c:a aac -vf 'format=nv12,hwupload' -c:v h264_vaapi -b:v 5M "+OUTPUT_FILE
 subprocess.call(command, shell=True)
 
 if not os.path.ismount(TEMP_FOLDER):

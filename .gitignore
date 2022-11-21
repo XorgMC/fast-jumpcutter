@@ -93,3 +93,8 @@ ENV/
 *.iml
 out
 gen
+
+# Project specific
+TEMP
+*.mp4
+log*
