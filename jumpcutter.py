@@ -163,7 +163,7 @@ if args.prefps is not None:
     print("Pre-converting file to", args.prefps, "FPS...")
     subprocess.call("ffmpeg -hide_banner -loglevel error -y -i \"" + INPUT_FILE + "\" -filter:v fps=" + str(
         int(args.prefps)) + " -c:v libx264 -preset veryfast -c:a copy \"" + TEMP_FOLDER + "/temp.mp4\"", shell=True)
-    INPUT_FILE = TEMP_FOLDER + "temp.mp4"
+    INPUT_FILE = TEMP_FOLDER + "/temp.mp4"
     frameRate = args.prefps
 
 if frameRate == -1:
