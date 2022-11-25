@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 
 parser = argparse.ArgumentParser(description="Speed up silent parts in videos (e.g. lectures).")
@@ -23,8 +24,7 @@ import datetime
 import tempfile
 import threading
 import numpy as np
-# import noisereduce as nr
-from scipy.io import wavfile
+import soundfile
 import cv2
 from audiotsm import phasevocoder
 from audiotsm.io.array import ArrayReader, ArrayWriter
@@ -39,10 +39,12 @@ done_flag = False
 exit_flag = False
 convThread = None
 updateThread = None
-mv = 0
 files = []
 update_progress = threading.Event()
 exit_event = threading.Event()
+silent_speed = args.silent_speed
+silent_thres = args.silent_threshold
+ffmpeg_path = ""
 
 
 # Utility functions
@@ -72,20 +74,12 @@ def progress_reader(procs, q):
 
 
 def cut_video(input_file, vc, tc):
-    global debug_output
-    global actions_val
-    global progress_val
-    global progress2_val
-    global done_flag
-    global exit_flag
-    global files
-
-    global mv
+    global debug_output, actions_val, progress_val, progress2_val, done_flag, exit_flag, files, silent_thres, \
+        silent_speed
     # TODO check if dependencies are installed and especially if ffmpeg is available
     # TODO if you're bored, check if this can be made any faster
 
     debug_output += "--- Konvertiere \"" + input_file + "\" ---\n"
-    updateGlobalProgress(vc, tc)
 
     # Set stdout, stderr for ffmpeg calls and end for any prints before calling ffmpeg
     stdout = None if args.show_ffmpeg_output else subprocess.DEVNULL
@@ -116,8 +110,8 @@ def cut_video(input_file, vc, tc):
     #                shell=True,
     #                stdout=stdout,
     #                stderr=stderr)
-    ap = subprocess.Popen(["ffmpeg -hide_banner -loglevel error -i \"{}\" -ab 160k -ac 2 -ar 44100 "
-                           "-vn {}".format(input_file, original_audio_file)],
+    ap = subprocess.Popen([ffmpeg_path + " -hide_banner -loglevel error -i \"{}\" -ab 160k -ac 2 -ar 44100 "
+                                         "-vn {}".format(input_file, original_audio_file)],
                           shell=True,
                           stdout=stdout,
                           stderr=stderr)
@@ -129,7 +123,8 @@ def cut_video(input_file, vc, tc):
             debug_output += "\nAbbruch!"
             return
 
-    sample_rate, audio_data = wavfile.read(original_audio_file)
+    # sample_rate, audio_data = wavfile.read(original_audio_file)
+    audio_data, sample_rate = soundfile.read(original_audio_file, dtype='int16')
     audio_channels = int(audio_data.shape[1])
     print("done!")
     debug_output += "fertig!"
@@ -139,8 +134,8 @@ def cut_video(input_file, vc, tc):
     # fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     # video_output = cv2.VideoWriter(video_file, fourcc, fps, (video_width, video_height))
 
-    output_params = {"-input_framerate": fps, "-r": fps,"-vcodec": "h264_nvenc"}
-    video_output = WriteGear(output_filename=video_file, logging=False, **output_params)
+    output_params = {"-input_framerate": fps, "-r": fps, "-vcodec": "h264_nvenc"}
+    video_output = WriteGear(output_filename=video_file, logging=False, **output_params, custom_ffmpeg=ffmpeg_path)
 
     audio_pointer = 0
     modified_audio = np.zeros_like(audio_data, dtype=np.int16)
@@ -194,8 +189,7 @@ def cut_video(input_file, vc, tc):
                 break
 
             # is this a silent frame?
-            mv = max(mv, get_max_volume(audio_sample))
-            if get_max_volume(audio_sample) < args.silent_threshold:
+            if get_max_volume(audio_sample) < silent_thres:
                 if frame_margin_ctr >= args.framemargin:  # skipped enough frames?
                     buffer.append(frame)
                     silent_end = audio_sample_end
@@ -211,7 +205,7 @@ def cut_video(input_file, vc, tc):
                 # audiotsm uses flipped dimensions, so transpose the numpy array
                 reader = ArrayReader(silent_sample.transpose())
                 writer = ArrayWriter(audio_channels)
-                tsm = phasevocoder(reader.channels, speed=args.silent_speed)
+                tsm = phasevocoder(reader.channels, speed=silent_speed)
                 tsm.run(reader, writer)
 
                 # Transpose back to regular dimensions
@@ -229,10 +223,10 @@ def cut_video(input_file, vc, tc):
 
                 # Calculate the position of audio_pointer based on how much
                 # sound is needed for the number of video frames added
-                audio_pointer += round(len(buffer[::args.silent_speed]) / fps * sample_rate)
+                audio_pointer += round(len(buffer[::silent_speed]) / fps * sample_rate)
 
                 # Write video frames and clear buffer
-                for frame in buffer[::args.silent_speed]:
+                for frame in buffer[::silent_speed]:
                     video_output.write(frame)
 
                 buffer = []
@@ -251,7 +245,6 @@ def cut_video(input_file, vc, tc):
             tpi = (tpi + (tn - t_start)) / float(2)
             t_start = tn
 
-        print(mv)
         bar.finish()
 
     if exit_flag:
@@ -265,7 +258,8 @@ def cut_video(input_file, vc, tc):
     debug_output += "\nSchreibe modifiziertes Audio... "
     # Slice off empty end (as frames have been skipped)
     modified_audio = modified_audio[:audio_pointer]
-    wavfile.write(audio_file, sample_rate, modified_audio)
+    # wavfile.write(audio_file, sample_rate, modified_audio)
+    soundfile.write(audio_file, modified_audio, sample_rate)
     debug_output += "fertig!"
     actions_val = 10
 
@@ -278,22 +272,24 @@ def cut_video(input_file, vc, tc):
         name, ext = os.path.splitext(input_file)
         out_file = "{}_faster{}".format(name, ext)
     else:
-        out_file = args.output_file
+        name, ext = os.path.splitext(input_file)
+        out_file = args.output_file.replace("%name%", name).replace("%ext%", ext)
 
     # Merge video and audio with ffmpeg
     print("Merging video and audio... ", end=end, flush=True)
     debug_output += "\nVereine Video und Audio zu einer Datei... "
-    if (os.path.exists(out_file)):
+    if os.path.exists(out_file):
         # TODO (y/n) prompt?
         os.remove(out_file)
 
-    mp = subprocess.Popen(
-        "ffmpeg -hide_banner -loglevel error -i {} -i {} -progress pipe:1 -c:v copy -c:a aac \"{}\"".format(video_file,
-                                                                                                            audio_file,
-                                                                                                            out_file),
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=stderr)
+    mp = subprocess.Popen(ffmpeg_path +
+                          " -hide_banner -loglevel error -i {} -i {} -progress pipe:1 -c:v copy -c:a aac \"{}\"".format(
+                              video_file,
+                              audio_file,
+                              out_file),
+                          shell=True,
+                          stdout=subprocess.PIPE,
+                          stderr=stderr)
 
     q = [0]  # We don't really need to use a Queue - use a list of of size 1
     progress_reader_thread = threading.Thread(target=progress_reader, args=(mp, q))  # Initialize progress reader thread
@@ -336,8 +332,12 @@ def cut_video(input_file, vc, tc):
     new_duration = str(datetime.timedelta(seconds=int(len(modified_audio) / sample_rate)))
     debug_output += "Old duration: {}, new duration: {}\n\n".format(old_duration, new_duration)
 
+    updateGlobalProgress(vc, tc)
     files.remove(input_file)
     if len(files) == 0:
+        progress_val = 100
+        progress2_val = 100
+        actions_val = 50
         done_flag = True
     else:
         progress_val = 0
@@ -362,6 +362,7 @@ def updateWindow(win):
     win["pb1"].update(pv)
     win["Abbruch"].update("Schließen")
     window["Start"].update(disabled=False)
+    window["Selekt"].update(disabled=False)
 
 
 def cancel_conversion():
@@ -404,11 +405,11 @@ layout = [[sg.Image(data=hdr)],
                     )],
           [sg.Frame("Knöpfe zum Drehen:", [
               [sg.Text("Stille-Schwelle:🔈", pad=(0, 3)),
-               sg.Slider(range=(0, 10000), default_value=600, resolution=100, orientation='horizontal',
+               sg.Slider(range=(0, 10000), default_value=silent_thres, resolution=100, orientation='horizontal',
                          expand_x=True, disable_number_display=True, pad=(0, 0), enable_events=True, key="thr"),
                sg.Text("🔉 600  ", key="thr-lbl", pad=(0, 3), font=("monospace", 11))],
               [sg.Text("Stille-Geschw.:🐢", pad=(0, 3)),
-               sg.Slider(range=(0, 500), default_value=10, resolution=1, orientation='horizontal',
+               sg.Slider(range=(0, 500), default_value=silent_speed, resolution=1, orientation='horizontal',
                          expand_x=True, disable_number_display=True, pad=(0, 0), enable_events=True, key="spd"),
                sg.Text("🐇 10   ", key="spd-lbl", pad=(0, 3), font=("monospace", 11))]
           ], expand_x=True)],
@@ -429,7 +430,19 @@ layout = [[sg.Image(data=hdr)],
 # Create the Window
 window = sg.Window('AutoCutter V3', layout, font=("Comic Sans MS", 12), finalize=True)
 
-print(window["thr-lbl"].Pad)
+if os.path.exists("ffmpeg"):
+    ffmpeg_path = "./ffmpeg"
+else:
+    import shutil
+
+    bpath = shutil.which("ffmpeg")
+    if bpath is not None:
+        ffmpeg_path = "bpath"
+    else:
+        sg.popup_error("Fehler: ffmpeg wurde nicht gefunden. Bitte lade ffmpeg herunter und platziere es im gleichen " +
+                       "Ordner wie diese Datei. FFMPEG bekommst du hier: https://ffmpeg.org/download.html",
+                       "Kein FFMPEG :(", non_blocking=False)
+        sys.exit(1)
 
 
 def on_close():
@@ -438,10 +451,10 @@ def on_close():
             sg.Popup("Moment, Umwandlung wird abgebrochen...", non_blocking=True, custom_text="")
             cancel_conversion()
             window.Close()
-            exit(0)
+            sys.exit(0)
     else:
         window.Close()
-        exit(0)
+        sys.exit(0)
     return
 
 
@@ -468,14 +481,17 @@ while True:
             window["Selekt"].update(disabled=True)
             window["Start"].update(disabled=True)
             done_flag = False
+            print(files)
             convThread = threading.Thread(target=cut_video, args=[files[0], 1, len(files)])
             convThread.start()
             updateThread = threading.Thread(target=updateWindow, args=[window])
             updateThread.start()
     if event == "thr":
         window["thr-lbl"].update("🔉 {}".format(round(values['thr'])).ljust(7))
+        silent_thres = round(values['thr'])
     if event == "spd":
         window["spd-lbl"].update("🐇 {}".format(round(values['spd'])).ljust(7))
+        silent_speed = round(values['spd'])
     if event == "Selekt":
         filesel = sg.popup_get_file('Unique File select', no_window=True, multiple_files=True,
                                     file_types=(("Videos", "*.mp4 *.mkv "
@@ -484,15 +500,15 @@ while True:
         fs = ""
         if filesel is None:
             files = []
+        files.clear()
         for f in filesel:
-            files.clear()
             files.append(f)
             fs += f + ";"
         window["InputFile"].update(fs)
     if event == "Abbruch":
         if convThread is None or not convThread.is_alive():
             window.close()
-            exit(0)
+            sys.exit(0)
         cancel_conversion()
         window["Abbruch"].update("Schließen")
         debug_output += "\nAbbruch!"
@@ -500,6 +516,7 @@ while True:
         window["pb1"].update(0)
         window["pb2"].update(0)
         window["Start"].update(disabled=False)
+        window["Selekt"].update(disabled=False)
     if event == sg.WIN_CLOSED:
         break
 
